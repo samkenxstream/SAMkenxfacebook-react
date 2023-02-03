@@ -4,6 +4,7 @@ const path = require('path');
 
 const babel = require('@babel/core');
 const coffee = require('coffee-script');
+const hermesParser = require('hermes-parser');
 
 const tsPreprocessor = require('./typescript/preprocessor');
 const createCacheKeyFunction = require('fbjs-scripts/jest/createCacheKeyFunction');
@@ -56,7 +57,7 @@ const babelOptions = {
 };
 
 module.exports = {
-  process: function(src, filePath) {
+  process: function (src, filePath) {
     if (filePath.match(/\.css$/)) {
       // Don't try to parse CSS modules; they aren't needed for tests anyway.
       return '';
@@ -93,7 +94,9 @@ module.exports = {
       ) {
         plugins.push(pathToTransformReactVersionPragma);
       }
-      return babel.transform(
+      let sourceAst = hermesParser.parse(src, {babel: true});
+      return babel.transformFromAstSync(
+        sourceAst,
         src,
         Object.assign(
           {filename: path.relative(process.cwd(), filePath)},
