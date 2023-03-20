@@ -130,7 +130,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
       : children;
   }
 
-  it('suppresses and fixes text mismatches with suppressHydrationWarning', async () => {
+  it('suppresses but does not fix text mismatches with suppressHydrationWarning', async () => {
     function App({isClient}) {
       return (
         <div>
@@ -141,7 +141,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -156,20 +156,20 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
         // Don't miss a hydration error. There should be none.
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await waitForAll([]);
     // The text mismatch should be *silently* fixed. Even in production.
     expect(getVisibleChildren(container)).toEqual(
       <div>
-        <span>Client Text</span>
-        <span>2</span>
+        <span>Server Text</span>
+        <span>1</span>
       </div>,
     );
   });
 
-  it('suppresses and fixes multiple text node mismatches with suppressHydrationWarning', async () => {
+  it('suppresses but does not fix multiple text node mismatches with suppressHydrationWarning', async () => {
     function App({isClient}) {
       return (
         <div>
@@ -180,7 +180,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -196,15 +196,15 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await waitForAll([]);
     expect(getVisibleChildren(container)).toEqual(
       <div>
         <span>
-          {'Client1'}
-          {'Client2'}
+          {'Server1'}
+          {'Server2'}
         </span>
       </div>,
     );
@@ -220,7 +220,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -237,7 +237,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
@@ -261,19 +261,17 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
   });
 
-  it('suppresses and fixes client-only single text node mismatches with suppressHydrationWarning', async () => {
-    function App({isClient}) {
+  it('suppresses but does not fix client-only single text node mismatches with suppressHydrationWarning', async () => {
+    function App({text}) {
       return (
         <div>
-          <span suppressHydrationWarning={true}>
-            {isClient ? 'Client' : null}
-          </span>
+          <span suppressHydrationWarning={true}>{text}</span>
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
-        <App isClient={false} />,
+        <App text={null} />,
       );
       pipe(writable);
     });
@@ -282,15 +280,23 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         <span />
       </div>,
     );
-    ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
+    const root = ReactDOMClient.hydrateRoot(container, <App text="Client" />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await waitForAll([]);
     expect(getVisibleChildren(container)).toEqual(
       <div>
-        <span>{'Client'}</span>
+        <span />
+      </div>,
+    );
+    // An update fixes it though.
+    root.render(<App text="Client 2" />);
+    await waitForAll([]);
+    expect(getVisibleChildren(container)).toEqual(
+      <div>
+        <span>Client 2</span>
       </div>,
     );
   });
@@ -307,7 +313,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -320,7 +326,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
@@ -353,7 +359,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -368,7 +374,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
@@ -404,7 +410,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -419,7 +425,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
@@ -453,7 +459,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -468,7 +474,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
@@ -495,7 +501,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
   });
 
-  it('suppresses and does not fix attribute mismatches with suppressHydrationWarning', async () => {
+  it('suppresses but does not fix attribute mismatches with suppressHydrationWarning', async () => {
     function App({isClient}) {
       return (
         <div>
@@ -509,7 +515,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -522,7 +528,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await waitForAll([]);
@@ -546,7 +552,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -559,7 +565,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await waitForAll([]);
@@ -579,7 +585,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -592,7 +598,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
@@ -624,7 +630,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
         </div>
       );
     }
-    await act(async () => {
+    await act(() => {
       const {pipe} = ReactDOMFizzServer.renderToPipeableStream(
         <App isClient={false} />,
       );
@@ -638,7 +644,7 @@ describe('ReactDOMFizzServerHydrationWarning', () => {
     );
     ReactDOMClient.hydrateRoot(container, <App isClient={true} />, {
       onRecoverableError(error) {
-        Scheduler.unstable_yieldValue(error.message);
+        Scheduler.log(error.message);
       },
     });
     await expect(async () => {
