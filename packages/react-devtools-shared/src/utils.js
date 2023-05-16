@@ -53,9 +53,8 @@ import {localStorageGetItem, localStorageSetItem} from './storage';
 import {meta} from './hydration';
 import isArray from './isArray';
 
-import type {ComponentFilter, ElementType} from './types';
+import type {ComponentFilter, ElementType, BrowserTheme} from './types';
 import type {LRUCache} from 'react-devtools-shared/src/types';
-import type {BrowserTheme} from 'react-devtools-shared/src/devtools/views/DevTools';
 
 // $FlowFixMe[method-unbinding]
 const hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -694,7 +693,7 @@ function truncateForDisplay(
   length: number = MAX_PREVIEW_STRING_LENGTH,
 ) {
   if (string.length > length) {
-    return string.substr(0, length) + '…';
+    return string.slice(0, length) + '…';
   } else {
     return string;
   }

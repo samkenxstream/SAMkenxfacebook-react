@@ -10,7 +10,7 @@
 
 'use strict';
 import {
-  replaceScriptsAndMove,
+  insertNodesAndExecuteScripts,
   mergeOptions,
   withLoadingReadyState,
 } from '../test-utils/FizzTestUtils';
@@ -24,8 +24,6 @@ let ReactDOMFizzServer;
 let Suspense;
 let textCache;
 let loadCache;
-let window;
-let document;
 let writable;
 const CSPnonce = null;
 let container;
@@ -37,28 +35,37 @@ let waitForAll;
 let waitForThrow;
 let assertLog;
 let Scheduler;
-
-function resetJSDOM(markup) {
-  // Test Environment
-  const jsdom = new JSDOM(markup, {
-    runScripts: 'dangerously',
-  });
-  // We mock matchMedia. for simplicity it only matches 'all' or '' and misses everything else
-  Object.defineProperty(jsdom.window, 'matchMedia', {
-    writable: true,
-    value: jest.fn().mockImplementation(query => ({
-      matches: query === 'all' || query === '',
-      media: query,
-    })),
-  });
-  window = jsdom.window;
-  document = jsdom.window.document;
-}
+let clientAct;
+let streamingContainer;
 
 describe('ReactDOMFloat', () => {
   beforeEach(() => {
     jest.resetModules();
     JSDOM = require('jsdom').JSDOM;
+
+    const jsdom = new JSDOM(
+      '<!DOCTYPE html><html><head></head><body><div id="container">',
+      {
+        runScripts: 'dangerously',
+      },
+    );
+    // We mock matchMedia. for simplicity it only matches 'all' or '' and misses everything else
+    Object.defineProperty(jsdom.window, 'matchMedia', {
+      writable: true,
+      value: jest.fn().mockImplementation(query => ({
+        matches: query === 'all' || query === '',
+        media: query,
+      })),
+    });
+    streamingContainer = null;
+    global.window = jsdom.window;
+    global.document = global.window.document;
+    global.navigator = global.window.navigator;
+    global.Node = global.window.Node;
+    global.addEventListener = global.window.addEventListener;
+    global.MutationObserver = global.window.MutationObserver;
+    container = document.getElementById('container');
+
     React = require('react');
     ReactDOM = require('react-dom');
     ReactDOMClient = require('react-dom/client');
@@ -71,12 +78,10 @@ describe('ReactDOMFloat', () => {
     waitForAll = InternalTestUtils.waitForAll;
     waitForThrow = InternalTestUtils.waitForThrow;
     assertLog = InternalTestUtils.assertLog;
+    clientAct = InternalTestUtils.act;
 
     textCache = new Map();
     loadCache = new Set();
-
-    resetJSDOM('<!DOCTYPE html><html><head></head><body><div id="container">');
-    container = document.getElementById('container');
 
     buffer = '';
     hasErrored = false;
@@ -94,9 +99,12 @@ describe('ReactDOMFloat', () => {
     renderOptions = {};
     if (gate(flags => flags.enableFizzExternalRuntime)) {
       renderOptions.unstable_externalRuntimeSrc =
-        'react-dom-bindings/src/server/ReactDOMServerExternalRuntime.js';
+        'react-dom/unstable_server-external-runtime';
     }
   });
+
+  const bodyStartMatch = /<body(?:>| .*?>)/;
+  const headStartMatch = /<head(?:>| .*?>)/;
 
   async function act(callback) {
     await callback();
@@ -111,44 +119,123 @@ describe('ReactDOMFloat', () => {
     // JSDOM doesn't support stream HTML parser so we need to give it a proper fragment.
     // We also want to execute any scripts that are embedded.
     // We assume that we have now received a proper fragment of HTML.
-    const bufferedContent = buffer;
+    let bufferedContent = buffer;
     buffer = '';
-    const fakeBody = document.createElement('body');
-    fakeBody.innerHTML = bufferedContent;
-    const parent =
-      container.nodeName === '#document' ? container.body : container;
-    await withLoadingReadyState(async () => {
-      while (fakeBody.firstChild) {
-        const node = fakeBody.firstChild;
-        await replaceScriptsAndMove(
-          document.defaultView,
-          CSPnonce,
-          node,
-          parent,
-        );
-      }
-    }, document);
-  }
 
-  async function actIntoEmptyDocument(callback) {
-    await callback();
-    // Await one turn around the event loop.
-    // This assumes that we'll flush everything we have so far.
-    await new Promise(resolve => {
-      setImmediate(resolve);
-    });
-    if (hasErrored) {
-      throw fatalError;
+    if (!bufferedContent) {
+      return;
     }
-    // JSDOM doesn't support stream HTML parser so we need to give it a proper fragment.
-    // We also want to execute any scripts that are embedded.
-    // We assume that we have now received a proper fragment of HTML.
-    const bufferedContent = buffer;
-    resetJSDOM(bufferedContent);
-    container = document;
-    buffer = '';
+
     await withLoadingReadyState(async () => {
-      await replaceScriptsAndMove(window, null, document.documentElement);
+      const bodyMatch = bufferedContent.match(bodyStartMatch);
+      const headMatch = bufferedContent.match(headStartMatch);
+
+      if (streamingContainer === null) {
+        // This is the first streamed content. We decide here where to insert it. If we get <html>, <head>, or <body>
+        // we abandon the pre-built document and start from scratch. If we get anything else we assume it goes into the
+        // container. This is not really production behavior because you can't correctly stream into a deep div effectively
+        // but it's pragmatic for tests.
+
+        if (
+          bufferedContent.startsWith('<head>') ||
+          bufferedContent.startsWith('<head ') ||
+          bufferedContent.startsWith('<body>') ||
+          bufferedContent.startsWith('<body ')
+        ) {
+          // wrap in doctype to normalize the parsing process
+          bufferedContent = '<!DOCTYPE html><html>' + bufferedContent;
+        } else if (
+          bufferedContent.startsWith('<html>') ||
+          bufferedContent.startsWith('<html ')
+        ) {
+          throw new Error(
+            'Recieved <html> without a <!DOCTYPE html> which is almost certainly a bug in React',
+          );
+        }
+
+        if (bufferedContent.startsWith('<!DOCTYPE html>')) {
+          // we can just use the whole document
+          const tempDom = new JSDOM(bufferedContent);
+
+          // Wipe existing head and body content
+          document.head.innerHTML = '';
+          document.body.innerHTML = '';
+
+          // Copy the <html> attributes over
+          const tempHtmlNode = tempDom.window.document.documentElement;
+          for (let i = 0; i < tempHtmlNode.attributes.length; i++) {
+            const attr = tempHtmlNode.attributes[i];
+            document.documentElement.setAttribute(attr.name, attr.value);
+          }
+
+          if (headMatch) {
+            // We parsed a head open tag. we need to copy head attributes and insert future
+            // content into <head>
+            streamingContainer = document.head;
+            const tempHeadNode = tempDom.window.document.head;
+            for (let i = 0; i < tempHeadNode.attributes.length; i++) {
+              const attr = tempHeadNode.attributes[i];
+              document.head.setAttribute(attr.name, attr.value);
+            }
+            const source = document.createElement('head');
+            source.innerHTML = tempHeadNode.innerHTML;
+            await insertNodesAndExecuteScripts(source, document.head, CSPnonce);
+          }
+
+          if (bodyMatch) {
+            // We parsed a body open tag. we need to copy head attributes and insert future
+            // content into <body>
+            streamingContainer = document.body;
+            const tempBodyNode = tempDom.window.document.body;
+            for (let i = 0; i < tempBodyNode.attributes.length; i++) {
+              const attr = tempBodyNode.attributes[i];
+              document.body.setAttribute(attr.name, attr.value);
+            }
+            const source = document.createElement('body');
+            source.innerHTML = tempBodyNode.innerHTML;
+            await insertNodesAndExecuteScripts(source, document.body, CSPnonce);
+          }
+
+          if (!headMatch && !bodyMatch) {
+            throw new Error('expected <head> or <body> after <html>');
+          }
+        } else {
+          // we assume we are streaming into the default container'
+          streamingContainer = container;
+          const div = document.createElement('div');
+          div.innerHTML = bufferedContent;
+          await insertNodesAndExecuteScripts(div, container, CSPnonce);
+        }
+      } else if (streamingContainer === document.head) {
+        bufferedContent = '<!DOCTYPE html><html><head>' + bufferedContent;
+        const tempDom = new JSDOM(bufferedContent);
+
+        const tempHeadNode = tempDom.window.document.head;
+        const source = document.createElement('head');
+        source.innerHTML = tempHeadNode.innerHTML;
+        await insertNodesAndExecuteScripts(source, document.head, CSPnonce);
+
+        if (bodyMatch) {
+          streamingContainer = document.body;
+
+          const tempBodyNode = tempDom.window.document.body;
+          for (let i = 0; i < tempBodyNode.attributes.length; i++) {
+            const attr = tempBodyNode.attributes[i];
+            document.body.setAttribute(attr.name, attr.value);
+          }
+          const bodySource = document.createElement('body');
+          bodySource.innerHTML = tempBodyNode.innerHTML;
+          await insertNodesAndExecuteScripts(
+            bodySource,
+            document.body,
+            CSPnonce,
+          );
+        }
+      } else {
+        const div = document.createElement('div');
+        div.innerHTML = bufferedContent;
+        await insertNodesAndExecuteScripts(div, streamingContainer, CSPnonce);
+      }
     }, document);
   }
 
@@ -348,7 +435,7 @@ describe('ReactDOMFloat', () => {
 
   // @gate enableFloat
   it('can hydrate non Resources in head when Resources are also inserted there', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head>
@@ -373,7 +460,7 @@ describe('ReactDOMFloat', () => {
           <meta property="foo" content="bar" />
           <title>foo</title>
           <link rel="foo" href="bar" />
-          <noscript>&lt;link rel="icon" href="icon"/&gt;</noscript>
+          <noscript>&lt;link rel="icon" href="icon"&gt;</noscript>
           <base target="foo" href="bar" />
         </head>
         <body>foo</body>
@@ -404,7 +491,7 @@ describe('ReactDOMFloat', () => {
           <meta property="foo" content="bar" />
           <title>foo</title>
           <link rel="foo" href="bar" />
-          <noscript>&lt;link rel="icon" href="icon"/&gt;</noscript>
+          <noscript>&lt;link rel="icon" href="icon"&gt;</noscript>
           <base target="foo" href="bar" />
           <script async="" src="foo" />
         </head>
@@ -596,7 +683,7 @@ describe('ReactDOMFloat', () => {
       );
     }
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       buffer = `<!DOCTYPE html><html><head>${ReactDOMFizzServer.renderToString(
         <App />,
       )}</head><body>foo</body></html>`;
@@ -623,7 +710,7 @@ describe('ReactDOMFloat', () => {
       );
     }
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       buffer = `<!DOCTYPE html><html>${ReactDOMFizzServer.renderToString(
         <App />,
       )}<body>foo</body></html>`;
@@ -647,7 +734,7 @@ describe('ReactDOMFloat', () => {
       chunks.push(chunk);
     });
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <>
           <title>foo</title>
@@ -679,7 +766,7 @@ describe('ReactDOMFloat', () => {
       );
     }
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -701,7 +788,7 @@ describe('ReactDOMFloat', () => {
 
   // @gate enableFloat
   it('can avoid inserting a late stylesheet if it already rendered on the client', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       renderToPipeableStream(
         <html>
           <body>
@@ -827,7 +914,7 @@ body {
   background-color: red;
 }`;
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       renderToPipeableStream(
         <html>
           <body>
@@ -1123,7 +1210,7 @@ body {
         </html>
       );
     }
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(<App />);
       pipe(writable);
     });
@@ -1186,7 +1273,7 @@ body {
     // events have already fired. This requires the load to be awaited for the commit to have a chance to flush
     // We could change this by tracking the loadingState's fulfilled status directly on the loadingState similar
     // to thenables however this slightly increases the fizz runtime code size.
-    await loadStylesheets();
+    await clientAct(() => loadStylesheets());
     assertLog(['load stylesheet: foo']);
     expect(getMeaningfulChildren(document)).toEqual(
       <html>
@@ -1209,7 +1296,7 @@ body {
 
   // @gate enableFloat
   it('treats stylesheet links with a precedence as a resource', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -1262,7 +1349,7 @@ body {
       );
     }
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -1300,7 +1387,7 @@ body {
     function PresetPrecedence() {
       ReactDOM.preinit('preset', {as: 'style', precedence: 'preset'});
     }
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -1582,7 +1669,7 @@ body {
 
   // @gate enableFloat
   it('normalizes stylesheet resource precedence for all boundaries inlined as part of the shell flush', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -1666,7 +1753,7 @@ body {
 
   // @gate enableFloat
   it('stylesheet resources are inserted according to precedence order on the client', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -1789,7 +1876,7 @@ body {
 
   // @gate enableFloat
   it('will include child boundary stylesheet resources in the boundary reveal instruction', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -1908,7 +1995,7 @@ body {
 
   // @gate enableFloat
   it('will hoist resources of child boundaries emitted as part of a partial boundary to the parent boundary', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -2130,7 +2217,7 @@ body {
       );
     }
     await expect(async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(<App />);
         pipe(writable);
       });
@@ -2216,7 +2303,7 @@ body {
 
   // @gate enableFloat
   it('boundary stylesheet resource dependencies hoist to a parent boundary when flushed inline', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(
         <html>
           <head />
@@ -2351,7 +2438,7 @@ body {
         </html>
       );
     }
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       const {pipe} = renderToPipeableStream(<App />);
       pipe(writable);
     });
@@ -2415,7 +2502,7 @@ body {
         </html>
       );
     }
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       renderToPipeableStream(<App />).pipe(writable);
     });
 
@@ -2571,7 +2658,7 @@ body {
       );
     }
 
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       renderToPipeableStream(<App />).pipe(writable);
     });
 
@@ -2591,7 +2678,7 @@ body {
           <link rel="stylesheet" href="stylesheet" />
           <script src="sync rendered" data-meaningful="" />
           <style>{'body { background-color: red; }'}</style>
-          <noscript>&lt;meta name="noscript" content="noscript"/&gt;</noscript>
+          <noscript>&lt;meta name="noscript" content="noscript"&gt;</noscript>
           <link rel="foo" href="foo" />
         </head>
         <body>
@@ -2657,7 +2744,7 @@ body {
           <script src="sync rendered" data-meaningful="" />
           <style>{'body { background-color: red; }'}</style>
           <script src="async rendered" async="" />
-          <noscript>&lt;meta name="noscript" content="noscript"/&gt;</noscript>
+          <noscript>&lt;meta name="noscript" content="noscript"&gt;</noscript>
           <link rel="foo" href="foo" />
           <style>{'body { background-color: blue; }'}</style>
           <div />
@@ -2711,7 +2798,7 @@ body {
   });
 
   it('does not preload nomodule scripts', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       renderToPipeableStream(
         <html>
           <body>
@@ -2837,7 +2924,7 @@ body {
   });
 
   it('assumes stylesheets that load in the shell loaded already', async () => {
-    await actIntoEmptyDocument(() => {
+    await act(() => {
       renderToPipeableStream(
         <html>
           <body>
@@ -3304,6 +3391,166 @@ body {
     );
   });
 
+  it('will not flush a preload for a new rendered Stylesheet Resource if one was already flushed', async () => {
+    function Component() {
+      ReactDOM.preload('foo', {as: 'style'});
+      return (
+        <div>
+          <Suspense fallback="loading...">
+            <BlockedOn value="blocked">
+              <link rel="stylesheet" href="foo" precedence="default" />
+              hello
+            </BlockedOn>
+          </Suspense>
+        </div>
+      );
+    }
+    await act(() => {
+      renderToPipeableStream(
+        <html>
+          <body>
+            <Component />
+          </body>
+        </html>,
+      ).pipe(writable);
+    });
+
+    expect(getMeaningfulChildren(document)).toEqual(
+      <html>
+        <head>
+          <link rel="preload" as="style" href="foo" />
+        </head>
+        <body>
+          <div>loading...</div>
+        </body>
+      </html>,
+    );
+    await act(() => {
+      resolveText('blocked');
+    });
+    await act(loadStylesheets);
+    assertLog(['load stylesheet: foo']);
+    expect(getMeaningfulChildren(document)).toEqual(
+      <html>
+        <head>
+          <link rel="stylesheet" href="foo" data-precedence="default" />
+          <link rel="preload" as="style" href="foo" />
+        </head>
+        <body>
+          <div>hello</div>
+        </body>
+      </html>,
+    );
+  });
+
+  it('will not flush a preload for a new preinitialized Stylesheet Resource if one was already flushed', async () => {
+    function Component() {
+      ReactDOM.preload('foo', {as: 'style'});
+      return (
+        <div>
+          <Suspense fallback="loading...">
+            <BlockedOn value="blocked">
+              <Preinit />
+              hello
+            </BlockedOn>
+          </Suspense>
+        </div>
+      );
+    }
+
+    function Preinit() {
+      ReactDOM.preinit('foo', {as: 'style'});
+    }
+    await act(() => {
+      renderToPipeableStream(
+        <html>
+          <body>
+            <Component />
+          </body>
+        </html>,
+      ).pipe(writable);
+    });
+
+    expect(getMeaningfulChildren(document)).toEqual(
+      <html>
+        <head>
+          <link rel="preload" as="style" href="foo" />
+        </head>
+        <body>
+          <div>loading...</div>
+        </body>
+      </html>,
+    );
+    await act(() => {
+      resolveText('blocked');
+    });
+    expect(getMeaningfulChildren(document)).toEqual(
+      <html>
+        <head>
+          <link rel="preload" as="style" href="foo" />
+        </head>
+        <body>
+          <div>hello</div>
+        </body>
+      </html>,
+    );
+  });
+
+  it('will not insert a preload if the underlying resource already exists in the Document', async () => {
+    await act(() => {
+      renderToPipeableStream(
+        <html>
+          <head>
+            <link rel="stylesheet" href="foo" precedence="default" />
+            <script async={true} src="bar" />
+            <link rel="preload" href="baz" as="font" />
+          </head>
+          <body>
+            <div id="container" />
+          </body>
+        </html>,
+      ).pipe(writable);
+    });
+
+    expect(getMeaningfulChildren(document)).toEqual(
+      <html>
+        <head>
+          <link rel="stylesheet" href="foo" data-precedence="default" />
+          <script async="" src="bar" />
+          <link rel="preload" href="baz" as="font" />
+        </head>
+        <body>
+          <div id="container" />
+        </body>
+      </html>,
+    );
+
+    container = document.getElementById('container');
+
+    function ClientApp() {
+      ReactDOM.preload('foo', {as: 'style'});
+      ReactDOM.preload('bar', {as: 'script'});
+      ReactDOM.preload('baz', {as: 'font'});
+      return 'foo';
+    }
+
+    const root = ReactDOMClient.createRoot(container);
+
+    await clientAct(() => root.render(<ClientApp />));
+    expect(getMeaningfulChildren(document)).toEqual(
+      <html>
+        <head>
+          <link rel="stylesheet" href="foo" data-precedence="default" />
+          <script async="" src="bar" />
+          <link rel="preload" href="baz" as="font" />
+        </head>
+        <body>
+          <div id="container">foo</div>
+        </body>
+      </html>,
+    );
+  });
+
   describe('ReactDOM.prefetchDNS(href)', () => {
     it('creates a dns-prefetch resource when called', async () => {
       function App({url}) {
@@ -3319,7 +3566,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(<App url="foo" />).pipe(writable);
         });
       }).toErrorDev([
@@ -3388,7 +3635,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(<App url="foo" />).pipe(writable);
         });
       }).toErrorDev(
@@ -3467,7 +3714,7 @@ body {
         return <div>hello</div>;
       }
 
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(<App />);
         pipe(writable);
       });
@@ -3553,7 +3800,7 @@ body {
         );
       }
 
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(<App />);
         pipe(writable);
       });
@@ -3618,7 +3865,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -3643,7 +3890,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -3687,7 +3934,7 @@ body {
         return <div>hello</div>;
       }
 
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(<App />);
         pipe(writable);
       });
@@ -3750,7 +3997,7 @@ body {
     });
 
     // @gate enableFloat
-    it('creates a preload resource when ReactDOM.preinit(..., {as: "style" }) is called outside of render on the client', async () => {
+    it('creates a stylesheet resource in the ownerDocument when ReactDOM.preinit(..., {as: "style" }) is called outside of render on the client', async () => {
       function App() {
         React.useEffect(() => {
           ReactDOM.preinit('foo', {as: 'style'});
@@ -3768,11 +4015,55 @@ body {
       expect(getMeaningfulChildren(document)).toEqual(
         <html>
           <head>
-            <link rel="preload" href="foo" as="style" />
+            <link rel="stylesheet" href="foo" data-precedence="default" />
           </head>
           <body>foo</body>
         </html>,
       );
+    });
+
+    // @gate enableFloat
+    it('creates a stylesheet resource in the ownerDocument when ReactDOM.preinit(..., {as: "style" }) is called outside of render on the client', async () => {
+      // This is testing behavior, but it shows that it is not a good idea to preinit inside a shadowRoot. The point is we are asserting a behavior
+      // you would want to avoid in a real app.
+      const shadow = document.body.attachShadow({mode: 'open'});
+      function ShadowComponent() {
+        ReactDOM.preinit('bar', {as: 'style'});
+        return null;
+      }
+      function App() {
+        React.useEffect(() => {
+          ReactDOM.preinit('foo', {as: 'style'});
+        }, []);
+        return (
+          <html>
+            <body>
+              foo
+              {ReactDOM.createPortal(
+                <div>
+                  <ShadowComponent />
+                  shadow
+                </div>,
+                shadow,
+              )}
+            </body>
+          </html>
+        );
+      }
+
+      const root = ReactDOMClient.createRoot(document);
+      root.render(<App />);
+      await waitForAll([]);
+      expect(getMeaningfulChildren(document)).toEqual(
+        <html>
+          <head>
+            <link rel="stylesheet" href="bar" data-precedence="default" />
+            <link rel="stylesheet" href="foo" data-precedence="default" />
+          </head>
+          <body>foo</body>
+        </html>,
+      );
+      expect(getMeaningfulChildren(shadow)).toEqual(<div>shadow</div>);
     });
 
     // @gate enableFloat
@@ -3797,7 +4088,7 @@ body {
         return <div>hello</div>;
       }
 
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(<App />);
         pipe(writable);
       });
@@ -3854,7 +4145,7 @@ body {
     });
 
     // @gate enableFloat
-    it('creates a preload resource when ReactDOM.preinit(..., {as: "script" }) is called outside of render on the client', async () => {
+    it('creates a script resource when ReactDOM.preinit(..., {as: "script" }) is called outside of render on the client', async () => {
       function App() {
         React.useEffect(() => {
           ReactDOM.preinit('foo', {as: 'script'});
@@ -3872,7 +4163,7 @@ body {
       expect(getMeaningfulChildren(document)).toEqual(
         <html>
           <head>
-            <link rel="preload" href="foo" as="script" />
+            <script async="" src="foo" />
           </head>
           <body>foo</body>
         </html>,
@@ -3914,7 +4205,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -3950,7 +4241,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -3975,7 +4266,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -4005,7 +4296,7 @@ body {
       }
 
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -4018,12 +4309,112 @@ body {
         'ReactDOM.preinit(): For `href` "foo", the options provided conflict with another call to `ReactDOM.preinit("foo", { as: "script", ... })`. React will always use the options it first encounters when preinitializing a hoistable script for a given `href` and any later options will be ignored if different. Try updating all calls to `ReactDOM.preinit()` for a given `href` to use the same options, or only call `ReactDOM.preinit()` once per `href`.\n  "integrity" option value: "some hash", missing from original options\n  "crossOrigin" option value: "anonymous", original option value: "use-credentials"',
       ]);
     });
+
+    it('accepts a `nonce` option for `as: "script"`', async () => {
+      function Component({src}) {
+        ReactDOM.preinit(src, {as: 'script', nonce: 'R4nD0m'});
+        return 'hello';
+      }
+
+      await act(() => {
+        renderToPipeableStream(
+          <html>
+            <body>
+              <Component src="foo" />
+            </body>
+          </html>,
+          {
+            nonce: 'R4nD0m',
+          },
+        ).pipe(writable);
+      });
+
+      expect(getMeaningfulChildren(document)).toEqual(
+        <html>
+          <head>
+            <script async="" src="foo" nonce="R4nD0m" />
+          </head>
+          <body>hello</body>
+        </html>,
+      );
+
+      await clientAct(() => {
+        ReactDOMClient.hydrateRoot(
+          document,
+          <html>
+            <body>
+              <Component src="bar" />
+            </body>
+          </html>,
+        );
+      });
+
+      expect(getMeaningfulChildren(document)).toEqual(
+        <html>
+          <head>
+            <script async="" src="foo" nonce="R4nD0m" />
+            <script async="" src="bar" nonce="R4nD0m" />
+          </head>
+          <body>hello</body>
+        </html>,
+      );
+    });
+
+    it('accepts an `integrity` option for `as: "script"`', async () => {
+      function Component({src, hash}) {
+        ReactDOM.preinit(src, {as: 'script', integrity: hash});
+        return 'hello';
+      }
+
+      await act(() => {
+        renderToPipeableStream(
+          <html>
+            <body>
+              <Component src="foo" hash="foo hash" />
+            </body>
+          </html>,
+          {
+            nonce: 'R4nD0m',
+          },
+        ).pipe(writable);
+      });
+
+      expect(getMeaningfulChildren(document)).toEqual(
+        <html>
+          <head>
+            <script async="" src="foo" integrity="foo hash" />
+          </head>
+          <body>hello</body>
+        </html>,
+      );
+
+      await clientAct(() => {
+        ReactDOMClient.hydrateRoot(
+          document,
+          <html>
+            <body>
+              <Component src="bar" hash="bar hash" />
+            </body>
+          </html>,
+        );
+      });
+
+      expect(getMeaningfulChildren(document)).toEqual(
+        <html>
+          <head>
+            <script async="" src="foo" integrity="foo hash" />
+            <script async="" src="bar" integrity="bar hash" />
+          </head>
+          <body>hello</body>
+        </html>,
+      );
+    });
   });
 
   describe('Stylesheet Resources', () => {
     // @gate enableFloat
     it('treats link rel stylesheet elements as a stylesheet resource when it includes a precedence when server rendering', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4076,7 +4467,7 @@ body {
 
     // @gate enableFloat
     it('treats link rel stylesheet elements as a stylesheet resource when it includes a precedence when hydrating', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4114,7 +4505,7 @@ body {
 
     // @gate enableFloat
     it('preloads stylesheets without a precedence prop when server rendering', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4142,7 +4533,7 @@ body {
 
     // @gate enableFloat
     it('hoists stylesheet resources to the correct precedence', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4237,7 +4628,7 @@ body {
 
     // @gate enableFloat && enableHostSingletons && enableClientRenderFallbackOnTextMismatch
     it('retains styles even when a new html, head, and/body mount', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4289,7 +4680,7 @@ body {
 
     // @gate enableFloat && !enableHostSingletons
     it('retains styles even when a new html, head, and/body mount - without HostSingleton', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4519,7 +4910,7 @@ body {
           </html>
         );
       }
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(<App />);
         pipe(writable);
       });
@@ -4573,7 +4964,7 @@ body {
 
     // @gate enableFloat
     it('escapes hrefs when selecting matching elements in the document when using preload and preinit', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -4636,7 +5027,7 @@ body {
 
     // @gate enableFloat
     it('does not create stylesheet resources when inside an <svg> context', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -4697,7 +5088,7 @@ body {
 
     // @gate enableFloat
     it('does not create stylesheet resources when inside a <noscript> context', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -4714,7 +5105,7 @@ body {
           <head />
           <body>
             <noscript>
-              &lt;link rel="stylesheet" href="foo" precedence="default"/&gt;
+              &lt;link rel="stylesheet" href="foo" precedence="default"&gt;
             </noscript>
           </body>
         </html>,
@@ -4740,7 +5131,7 @@ body {
     // @gate enableFloat
     it('warns if you provide a `precedence` prop with other props that invalidate the creation of a stylesheet resource', async () => {
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -4824,7 +5215,7 @@ body {
         );
       }
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           const {pipe} = renderToPipeableStream(<App />);
           pipe(writable);
         });
@@ -4852,7 +5243,7 @@ body {
         );
       }
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           const {pipe} = renderToPipeableStream(<App />);
           pipe(writable);
         });
@@ -4863,7 +5254,7 @@ body {
 
     // @gate enableFloat
     it('will not block displaying a Suspense boundary on a stylesheet with media that does not match', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(
           <html>
             <body>
@@ -4984,7 +5375,7 @@ body {
 body {
   background-color: red;
 }`;
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(
           <html>
             <body>
@@ -5022,7 +5413,7 @@ background-color: blue;
 body {
 background-color: green;
 }`;
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(
           <html>
             <body>
@@ -5127,7 +5518,7 @@ background-color: green;
     // @gate enableFloat
     it('can emit styles early when a partial boundary flushes', async () => {
       const css = 'body { background-color: red; }';
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(
           <html>
             <body>
@@ -5195,7 +5586,7 @@ background-color: green;
     });
 
     it('can hoist styles flushed early even when no other style dependencies are flushed on completion', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(
           <html>
             <body>
@@ -5259,7 +5650,7 @@ background-color: green;
     });
 
     it('can emit multiple style rules into a single style tag for a given precedence', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(
           <html>
             <body>
@@ -5438,7 +5829,7 @@ background-color: green;
 
     it('warns if you render a <style> with an href with a space on the server', async () => {
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           renderToPipeableStream(
             <html>
               <body>
@@ -5458,7 +5849,7 @@ background-color: green;
   describe('Script Resources', () => {
     // @gate enableFloat
     it('treats async scripts without onLoad or onError as Resources', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <head />
@@ -5524,7 +5915,7 @@ background-color: green;
 
     // @gate enableFloat
     it('does not create script resources when inside an <svg> context', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -5585,7 +5976,7 @@ background-color: green;
 
     // @gate enableFloat
     it('does not create script resources when inside a <noscript> context', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -5644,7 +6035,7 @@ background-color: green;
         );
       }
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           const {pipe} = renderToPipeableStream(<App />);
           pipe(writable);
         });
@@ -5677,7 +6068,7 @@ background-color: green;
         );
       }
       await expect(async () => {
-        await actIntoEmptyDocument(() => {
+        await act(() => {
           const {pipe} = renderToPipeableStream(<App />);
           pipe(writable);
         });
@@ -5690,7 +6081,7 @@ background-color: green;
   describe('Hoistables', () => {
     // @gate enableFloat
     it('can hoist meta tags on the server and hydrate them on the client', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -5766,7 +6157,7 @@ background-color: green;
 
     // @gate enableFloat
     it('can hoist link (non-stylesheet) tags on the server and hydrate them on the client', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -5842,7 +6233,7 @@ background-color: green;
 
     // @gate enableFloat
     it('can hoist title tags on the server and hydrate them on the client', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -5918,7 +6309,7 @@ background-color: green;
 
     // @gate enableFloat
     it('prioritizes ordering for certain hoistables over others when rendering on the server', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -5960,7 +6351,7 @@ background-color: green;
       let content = '';
       writable.on('data', chunk => (content += chunk));
 
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -6008,7 +6399,7 @@ background-color: green;
 
     // @gate enableFloat
     it('supports rendering hoistables outside of <html> scope', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <>
             <meta name="before" />
@@ -6096,7 +6487,7 @@ background-color: green;
           </html>
         );
       }
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         renderToPipeableStream(<App />).pipe(writable);
       });
 
@@ -6186,7 +6577,7 @@ background-color: green;
 
     // @gate enableFloat
     it('does not hoist inside an <svg> context', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -6220,7 +6611,7 @@ background-color: green;
 
     // @gate enableFloat
     it('does not hoist inside noscript context', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <html>
             <body>
@@ -6247,7 +6638,7 @@ background-color: green;
 
     // @gate enableFloat && enableHostSingletons && (enableClientRenderFallbackOnTextMismatch || !__DEV__)
     it('can render a title before a singleton even if that singleton clears its contents', async () => {
-      await actIntoEmptyDocument(() => {
+      await act(() => {
         const {pipe} = renderToPipeableStream(
           <>
             <title>foo</title>

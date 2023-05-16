@@ -23,6 +23,7 @@ export const enableCache = false;
 export const enableLegacyCache = false;
 export const enableCacheElement = false;
 export const enableFetchInstrumentation = false;
+export const enableFormActions = true; // Doesn't affect Native
 export const disableJavaScriptURLs = false;
 export const disableCommentsAsDOMContainers = true;
 export const disableInputAttributeSyncing = false;
@@ -32,14 +33,12 @@ export const enableScopeAPI = false;
 export const enableCreateEventHandleAPI = false;
 export const enableSuspenseCallback = false;
 export const disableLegacyContext = false;
-export const revertRemovalOfSiblingPrerendering = false;
 export const enableTrustedTypesIntegration = false;
 export const disableTextareaChildren = false;
 export const disableModulePatternComponents = false;
 export const enableSuspenseAvoidThisFallback = false;
 export const enableSuspenseAvoidThisFallbackFizz = false;
 export const enableCPUSuspense = false;
-export const enableUseHook = true;
 export const enableUseMemoCacheHook = false;
 export const enableUseEffectEventHook = false;
 export const enableClientRenderFallbackOnTextMismatch = true;
@@ -54,6 +53,7 @@ export const enableUseRefAccessWarning = false;
 export const disableSchedulerTimeoutInWorkLoop = false;
 export const enableLazyContextPropagation = false;
 export const enableLegacyHidden = false;
+export const enableSyncDefaultUpdates = true;
 export const enableUnifiedSyncLane = false;
 export const allowConcurrentByDefault = false;
 export const enableCustomElementPropertySupport = false;
@@ -70,6 +70,11 @@ export const enableHostSingletons = true;
 export const useModernStrictMode = false;
 export const enableFizzExternalRuntime = false;
 export const enableDeferRootSchedulingToMicrotask = true;
+
+export const diffInCommitPhase = true;
+export const enableAsyncActions = false;
+
+export const alwaysThrottleRetries = true;
 
 // Flow magic to verify the exports of this file match the original version.
 ((((null: any): ExportsType): FeatureFlagsType): ExportsType);

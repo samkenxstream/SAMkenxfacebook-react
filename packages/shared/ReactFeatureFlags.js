@@ -22,11 +22,6 @@ export const enableComponentStackLocations = true;
 // when it rolls out to prod. We should remove these as soon as possible.
 // -----------------------------------------------------------------------------
 
-// This is phrased as a negative so that if someone forgets to add a GK, the
-// default is to enable the feature. It should only be overridden if there's
-// a regression in prod.
-export const revertRemovalOfSiblingPrerendering = false;
-
 // -----------------------------------------------------------------------------
 // Land or remove (moderate effort)
 //
@@ -90,6 +85,8 @@ export const enableLegacyCache = __EXPERIMENTAL__;
 export const enableCacheElement = __EXPERIMENTAL__;
 export const enableFetchInstrumentation = true;
 
+export const enableFormActions = __EXPERIMENTAL__;
+
 export const enableTransitionTracing = false;
 
 // No known bugs, but needs performance testing
@@ -109,8 +106,6 @@ export const enableHostSingletons = true;
 
 export const enableFloat = true;
 
-export const enableUseHook = true;
-
 // Enables unstable_useMemoCache hook, intended as a compilation target for
 // auto-memoization.
 export const enableUseMemoCacheHook = __EXPERIMENTAL__;
@@ -121,6 +116,13 @@ export const enableUseEffectEventHook = __EXPERIMENTAL__;
 // Enables DOM-server to stream its instruction set as data-attributes
 // (handled with an MutationObserver) instead of inline-scripts
 export const enableFizzExternalRuntime = true;
+
+// Performance related test
+export const diffInCommitPhase = __EXPERIMENTAL__;
+
+export const enableAsyncActions = __EXPERIMENTAL__;
+
+export const alwaysThrottleRetries = true;
 
 // -----------------------------------------------------------------------------
 // Chopping Block
@@ -141,6 +143,9 @@ export const disableModulePatternComponents = false;
 export const disableLegacyContext = false;
 
 export const enableUseRefAccessWarning = false;
+
+// Enables time slicing for updates that aren't wrapped in startTransition.
+export const enableSyncDefaultUpdates = true;
 
 export const enableUnifiedSyncLane = __EXPERIMENTAL__;
 
