@@ -23,7 +23,6 @@ export const {
   enableDebugTracing,
   enableUseRefAccessWarning,
   enableLazyContextPropagation,
-  enableSyncDefaultUpdates,
   enableUnifiedSyncLane,
   enableTransitionTracing,
   enableCustomElementPropertySupport,
@@ -31,6 +30,7 @@ export const {
   diffInCommitPhase,
   enableAsyncActions,
   alwaysThrottleRetries,
+  enableDO_NOT_USE_disableStrictPassiveEffect,
 } = dynamicFeatureFlags;
 
 // On WWW, __EXPERIMENTAL__ is used for a new modern build.
@@ -105,6 +105,8 @@ export const enableUseMutableSource = true;
 
 export const useModernStrictMode = false;
 export const enableFizzExternalRuntime = true;
+
+export const forceConcurrentByDefaultForTesting = false;
 
 // Flow magic to verify the exports of this file match the original version.
 ((((null: any): ExportsType): FeatureFlagsType): ExportsType);

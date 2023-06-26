@@ -66,7 +66,7 @@ export const createRootStrictEffectsByDefault = false;
 export const disableSchedulerTimeoutInWorkLoop = false;
 export const enableLazyContextPropagation = false;
 export const enableLegacyHidden = true;
-export const enableSyncDefaultUpdates = true;
+export const forceConcurrentByDefaultForTesting = false;
 export const enableUnifiedSyncLane = false;
 export const allowConcurrentByDefault = true;
 export const enableCustomElementPropertySupport = false;
@@ -82,6 +82,7 @@ export const enableFloat = true;
 export const enableHostSingletons = true;
 
 export const useModernStrictMode = false;
+export const enableDO_NOT_USE_disableStrictPassiveEffect = false;
 export const enableFizzExternalRuntime = false;
 
 export const diffInCommitPhase = true;
